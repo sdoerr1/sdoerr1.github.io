@@ -1,0 +1,379 @@
+---
+title: 'Homework 4: Computational Molecular Medicine'
+author: "Sophia Doerr"
+date: "April 25, 2017"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.width=6, fig.height=4)
+```
+
+# Statistical Analysis of Microarray Data Using SVA, k-TSP, and SVM
+
+## Surrogate Variable Analysis (SVA)  
+  As described in the assignment, there are many possible batch effects because the data was collected by three different European labs and data collected by microarray from the same phenotypes but by different labs can be widely varying. Surrogate variable analysis is one way to try and filter out these batch effects (and has been suggested by Dr. Bader) when we're not sure where they came from. 
+  Leek et. al (2010) define batch effects as follows:
+Batch effects are sub-groups of measurements that have qualitatively different behaviour across conditions and are unrelated to the biological or scientific variables in a study. For example, batch effects may occur if a subset of experiments was run on Monday and another set on Tuesday, if two technicians were responsible for different subsets of the experiments, or if two different lots of reagents, chips or instruments were used.
+I will identify and estimate batch effects of this high thoroughput study using the R SVA package.
+"Removing batch effects and using surrogate variables
+in differential expression analysis have been shown to reduce dependence, stabilize error rate estimates,
+and improve reproducibility" (Leek et al).
+
+  As discussed in Leeks research (a top biostatician at Johns Hopkins University), this method is merely used at removing noise and batch effects on ALL of the data before even moving to training and testing. This is justified because this is not selecting predictive subsets using all the data, but merely a filtering technique. Anyone who would like to read more about this can reference Jeffrey Leek's Thesis paper, "Surrogate Variable Analysis", 2008.
+  
+Note: In order to be able to run this code, several different packages are needed. A few are from bioconductor, and will require the following code to install each of them:
+
+source("http://bioconductor.org/biocLite.R")  
+biocLite("sva")  
+install.packages('ROCR')  
+install.packages('e1071')  
+source("https://bioconductor.org/biocLite.R")  
+biocLite("switchBox")  
+(after installed, use require('switchBox'))
+
+```{r Data organization}
+# The phenotype data has been organized in such a manner that needs preprocessing
+# The data is not numerical, so below I will have code to convert it
+library(readr)
+
+cmm_path = "C:/Users/sophi/Documents/JHUDoerr/JHU 2016-17/Spring 2017/Computational Molecular Medicine/HW4/brcaDataSets3_HW4"
+cat(file.path(cmm_path,"brcaTestPheno.csv"))
+brcaTestPheno <- read_csv(file.path(cmm_path,"brcaTestPheno.csv"))
+brcaTestExpr <- read_csv(file.path(cmm_path,"brcaTestExpr.csv"))
+brcaTrainPheno <- read_csv(file.path(cmm_path,"brcaTrainPheno.csv"))
+brcaTrainExpr <- read_csv(file.path(cmm_path,"brcaTrainExpr.csv"))
+
+nobs <- 212
+# make new numerical vectors to store binary phenotype information
+testPheno <- vector("numeric",nobs)
+trainPheno <- vector("numeric",nobs)
+
+for (i in seq(1,nobs)){
+  if (brcaTestPheno[i,2] == 'Relapse') {
+    testPheno[i] <- 1
+  } else if (brcaTestPheno[i,2] == 'NoRelapse') {
+    testPheno[i] <- 0
+  }
+  if (brcaTrainPheno[i,2] == 'Relapse'){
+    trainPheno[i] <- 1
+  } else if (brcaTrainPheno[i,2] == 'NoRelapse'){
+    trainPheno[i] <- 0
+  }
+}
+
+```
+
+
+### SVA
+```{r SVA}
+
+# The sva function takes the training data and calculates the number of surrogate variables
+#Then inputting this information into the fsva function filters out batch effects for all
+# of the data and outputs it in the form of a dataframe as an object of fsva
+library(sva)
+require('switchBox')
+library(e1071)
+library(ROCR)
+trainData = as.matrix(brcaTrainExpr[,2:(nobs+1)])
+testData = as.matrix(brcaTestExpr[,2:(nobs+1)])
+trainMod = model.matrix(~trainPheno)
+trainMod0 = model.matrix(~1,data=data.frame(trainPheno))
+trainSv = sva(trainData,trainMod,trainMod0)
+fsvaobj = fsva(trainData,trainMod,trainSv,testData)
+
+```
+
+## Using k-TSP to find Differentially Expressed Genes
+
+This uses an implementation of switchbox to pick the top 100 differentially expressed genes. 100 genes are picked via the pairing system and then from there in the next section, 10, 30, 50, 60, 80, and 100 top genes are tested with the classifier (support vector machine). As mentioned in the homework statement, parsimony is an important part of any algorithm, and simplicity is very important when analyzing data. In genomics research there is so much data and so many features to investigate. Classifiers and any sort of process are much easier to generalize to many situations when the number of factors or variables in the algorithm is a small number. That is why in research we try and look for small subsets of very predictive genes for diseases. In this assignment, these different subsets of small numbers of genes will be tested for predictive power. This is much limited from the overrall subset of 22,500 genes.
+
+There are many different types of algorithms and classifiers in the world of machine learning and many techniques that can be applied to predict an outcome class in a testing set of data. After researching a few of the algorithms that have been used in cancer outcome prediction, I found an article, "Top Scoring pairs for feature selection in machine learning and applications to cancer outcome prediction" by Shi et al. The article discusses how k-TSP has been widely applied to microarray data sets such as the set that we are analyzing. However, they applied different techniques involving using k-TSP by itself, using Support Vector Machine, using k-TSP to select differentially expressed genes and then using SVM as a classifier, along wiht many other processes, and it was found that the combination of k-TSP and then SVM was the most effective in error rates for cancer outcome prediction. Based on this assertion, I will be applying this process to the data set we have been given and analyzing how well it performs based on several different factors. In the end I will compare this to simply using k-TSP.
+
+The k-Top Scoring Pair Algorithm is a generalization off of Gemen's Top Scoring Pair Algorithm introduced in 2004. The algorithm. Consider $$G$$ genes with expression level $$\textbf{X}={X_{1},X_{2},...,X_{G}}$$ for each sample (patient), and each has a class $$C = 0,1$$, which in this case we have two classes where 0 is no relapse and 1 is relapse. The top scoring pair algorithm finds the top most predictive pairs where the probability of the expression levels $$X_{i} < X_{j}$$ in class 0 is much different than in class 1, where $$j \ne i$$. The conditional probability is then calculated based on the observed frequencies for each possible pair of genes in the set, or $$p_{ij} = P(X_{i}< X_{j}| 0,1)$$. A score is then calculated for each pair: $$\delta_{ij} = |p_{ij} - p_{ji}|$$, and then the pairs are ranked based on their score. The highest scoring k pairs are chosen for the k-TSP Algorithm. For this particular application I won't explain how it can then be used as a classifier because I am using this for limiting the genes based on differential expression. 2- fold cross validation will be used.
+
+```{r SVM}
+# Arrange data for k-TSP function, add rownames
+x <- unlist(brcaTestExpr[,1]) # Take rownames from original dataset
+f1_Expr <- fsvaobj$db
+f2_Expr <- fsvaobj$new
+f1_Pheno <- trainPheno
+f2_Pheno <- testPheno
+rownames(f1_Expr) <- x
+rownames(f2_Expr) <- x
+
+# Perform filtering with k-TSP separately on both folds
+
+topx <- 50
+# Fold 1
+# This applies the k-TSP algorithm and finds top k pairs (50)
+scores <- SWAP.CalculateScores(f1_Expr,factor(f1_Pheno))
+pairs <- SWAP.MakeTSPTable(scores,topx*2,disjoint = TRUE)
+f1_topxPairs <- pairs[1:topx,1:3]
+f1_topxIndices <- vector('numeric',2*topx)
+for (j in seq(1,topx)){
+  f1_topxIndices[j] <- which(brcaTrainExpr[,1] == as.character(as.matrix(pairs[j,1])) , arr.ind = T)[1]
+  f1_topxIndices[j+topx] <- which(brcaTrainExpr[,1] == as.character(as.matrix(pairs[j,2]), arr.ind = T))[1]
+}
+
+# Fold 2
+# Applies k-TSP algorithm and finds top k pairs (50)
+scores <- SWAP.CalculateScores(f2_Expr,factor(f2_Pheno))
+pairs <- SWAP.MakeTSPTable(scores,topx*2,disjoint = TRUE)
+f2_topxPairs <- pairs[1:topx,1:3]
+f2_topxIndices <- vector('numeric',2*topx)
+for (j in seq(1,topx)){
+  f2_topxIndices[j] <- which(brcaTrainExpr[,1] == as.character(as.matrix(pairs[j,1])) , arr.ind = T)[1]
+  f2_topxIndices[j+topx] <- which(brcaTrainExpr[,1] == as.character(as.matrix(pairs[j,2]), arr.ind = T))[1]
+}
+```
+
+## Using Support Vector Machine for Classification
+Now, after the top differentially expressed features have been selected via the k-TSP Algorithm, a classifier will be built on the training data using support vector machine and then predictions will be made on the test data. This will be performed using 2-fold cross validation, and so features that were selected using k-TSP which are selected separately for each fold will be used in their respective round of cross validation. The Support Vector Machine algorithm works to find an optimal hyperplane that separates the data into its respective classes. The hyperplane can be linear, or it can be a polynomial or one of many other types of hyperplanes. In this code, I will be using the linear hyperplane, as used in the paper (note that they used a cost of 1 and I will be finding the optimum cost value for the linear algorithm instead using the tune function).
+
+The F-measure is a measure of precision and recall at each different threshold level for a discriminant function. In this case, the discriminant function is the hyperplane which separates the two classes using SVM. The SVM algorithm finds the optimal hyperplane which leads to the best classification. In this example I am using a linear kernel, as is done in the paper I am replicating, not only because this is the procedure they used but also because upon trying different algorithms (radial, polynomial, etc.), the linear kernel performed the best. The decision rule in this case uses a vector w that must be perpendicular to the linear hyperplane, and that extends from the origin. if u is any vector or data point that we are testing ( a vector because each data point has a value for each of the genes), then the decision rule is: $$\textbf{w} \bullet \textbf{u} +b \geq 0$$ where the data point is classified as one class when greater than or equal to 0 and another when less than 0, where b is a constant. By using Lagrange multipliers, the value for w is found and then for each data point this is calculated. This is the basis of the discriminant funciton for SVM, and is what is being calculated in the svm funciton in the e1071 package in R.
+
+Precision is the ratio of the number of correctly predicted classes of label 1 over the total number of classes predicted to be in class 1. Recall is the fraction of total class labels that were actually 1 that were predicted to be 1. Sensitivity is actually the same as recall and specificity is the number of cases that were predicted class label 0 that were actually class label 0 over all the classes that were predicted to be 0's. The F-measure is: $$Fmeasure = 2* \frac{precision*recall}{precision + recall}$$. This is also referred to as a harmonic mean. This is a measure that will be calculated and shown for each of the subset sizes (I will be testing different subset sizes to see which number of differentially expressed genes leads to the best results). 
+
+
+
+
+
+```{r SVM classifier}
+# Apply Suppor Vector Machine to filtered genes and train classifier
+
+
+
+### create function here so you can test subsets of 10, 50, 100, and 1000
+SVM_arrange <- function(x, topxIndices,train_Pheno, train_Expr, test_Pheno, test_Expr){
+# Using x top differentially expressed genes
+# Arrange Data for svm function (create combined matrices with class labels and expression data)
+  nsamples <- length(train_Pheno)
+  topxIndices <- topxIndices[1:x]
+  
+  train = data.frame(x = t(train_Expr[topxIndices,]), y = as.factor(train_Pheno))
+  test = data.frame(x = t(test_Expr[topxIndices,]), y = as.factor(test_Pheno))
+  colnames(train) <- c(1:x, 'train_Ph')
+  colnames(test) <- c(1:x, 'test_Ph')
+  return (list(tr = train,te = test))
+}
+
+accuracy <- function(svm_predictions,test_Pheno){
+  nsamples = length(test_Pheno)
+  pred <- (as.numeric(svm_predictions) == 2)
+  svm_classifier.acc <- length(which(pred == test_Pheno))/nsamples
+  return (list(acc = svm_classifier.acc))
+}
+
+# ROC sensitivity and specificity function which plots the sensitivity and specificity of the cancer predictions on a graph
+roc_ss <- function(svm_predictions,test,r){
+  x <- length(test[1,])-1
+  prob.cancer <- attr (svm_predictions, "probabilities")[, 1]
+  roc.pred <- prediction (prob.cancer, test$test_Ph == 1)
+  perf <- performance (roc.pred, "sens", "spec")
+  plot(perf,colorize = TRUE, main = paste("Sensitivity-Specificity Curve for CV Round",r, 'Subset of',x,'Genes'),lwd = 4, xlab = 'Specificity',ylab = 'Sensitivity',ylim=range(0:1))
+  abline(a = 1, b = -1)
+
+  # AUC for Sensitivity-Specificity Curve
+  svm_classifier.ss_auc<-performance(roc.pred,"auc")@y.values[[1]]
+  # Sensitivity value closest to and greater than .8
+  svm_classifier.sens_80 <- perf@x.values[[1]][max(which(perf@x.values[[1]]>.8))]
+  # Corresponding specificity
+  svm_classifier.spec_80 <- perf@y.values[[1]][max(which(perf@x.values[[1]]>.8))]
+  return (list(spec80 = svm_classifier.spec_80,sens80 = svm_classifier.sens_80,ssAuc = svm_classifier.ss_auc))
+}
+
+# ROC precision recall function which plots the precision and recall of the cancer predictions on a graph
+roc_pr <- function(svm_predictions,test,r){
+  x <- length(test[1,])-1
+  prob.cancer <- attr (svm_predictions, "probabilities")[, 1]
+  roc.pred <- prediction (prob.cancer, test$test_Ph == 1)
+  
+  perf <- performance (roc.pred, "prec", "rec")
+  plot(perf,colorize = TRUE, main = paste("Precision-Recall Curve for CV Round",r,'Subset of',x,'Genes'),lwd = 4, xlab = 'Recall',ylab = 'Precision',ylim=range(0:1))
+  abline(h = 0.5, lty = 2)
+  svm_classifier.pr_auc <- performance(roc.pred,"auc")@y.values[[1]]
+  f_scores<-performance(roc.pred,"f")@y.values[[1]] # maximum F-score
+  svm_classifier.f <- f_scores[which.max(f_scores)]
+  svm_classifier.prec_f <- perf@y.values[[1]][which.max(f_scores)] # precision for max F-score
+  svm_classifier.rec_f <- perf@x.values[[1]][which.max(f_scores)] # recall for max F-score
+  return (list(f = svm_classifier.f, precf = svm_classifier.prec_f,recf = svm_classifier.rec_f, prAuc = svm_classifier.pr_auc))
+  
+}
+
+# The below function performs the svm classifier with a linear kernel, calculates accuracy, sensitivity & specificity, precision & recall
+SVM_analysis <- function(x,topxIndices,train_Pheno,train_Expr,test_Pheno,test_Expr,r){
+  arrange_svm <- SVM_arrange(x, topxIndices,train_Pheno, train_Expr, test_Pheno, test_Expr)
+  train <- arrange_svm$tr
+  test <- arrange_svm$te
+# Perform Svm classification
+# Find optimum Parameters
+  #tune_classifier <- tune(svm,factor(train_Ph) ~.,data = train,kernel = 'linear',ranges = list(cost = c(.001,.01,.1,1,10,100)),probability = TRUE,scale = FALSE)
+# It can be seen from the tune function that the optimum value for cost is .01
+# Therefore, the calculations and generatoin of the ROC plot below will use this value
+  test_Expr <- test[-x-1]
+  svm_classifier <- svm(factor(train_Ph)~., train, kernel = 'linear',
+                        cost = 1,probability = TRUE,scale = FALSE)
+  
+  svm_predictions <- predict(svm_classifier,test,decision.values = TRUE,probability = TRUE)
+  svm_classifier.acc <- accuracy(svm_predictions,test_Pheno)
+  
+
+  
+  # Now create ROC curve of sensitivity vs. specificity
+  svm_ss <- roc_ss(svm_predictions,test,r)
+
+  # Now for the Precision Recall Graph:
+  svm_pr <- roc_pr(svm_predictions,test,r)
+  
+  
+  return (list(f = svm_pr$f,precf = svm_pr$precf,recf = svm_pr$recf, ssAuc = svm_ss$ssAuc, sens80 = svm_ss$sens80, spec80 = svm_ss$spec80, acc = svm_classifier.acc,prAuc = svm_pr$prAuc))
+}
+
+subsets = c(10,40,80,100)
+# Now to display the specific metrics for each subset size of the classifier
+for (i in seq(1,length(subsets))){
+  
+  svm_classifier <- SVM_analysis(subsets[i],f1_topxIndices,f1_Pheno,f1_Expr,f2_Pheno,f2_Expr,1)
+  cat(paste('Round 1 Cross Validation for using',subsets[i],'differentially expressed genes \n'))
+  cat(paste('Accuracy:',svm_classifier$acc,'\n'))
+  cat(paste('Sensitivity-Specificity AUC:', svm_classifier$ssAuc,'\n'))
+  cat(paste('Smallest Sensitivity over .80:',svm_classifier$sens80,'\n'))
+  cat(paste('Corresponding Specifcity:',svm_classifier$spec80,'\n'))
+  cat(paste('Precision-Recall AUC:', svm_classifier$prAuc,'\n'))
+  cat(paste('Maximum F-score:',svm_classifier$f,'\n'))
+  cat(paste('Maximum F-score Precision:',svm_classifier$precf,'\n'))
+  cat(paste('Maximum F-score Recall:',svm_classifier$recf,'\n'))
+  cat('\n')
+  
+  SVM_analysis(subsets[i],f2_topxIndices,f2_Pheno,f2_Expr,f1_Pheno,f1_Expr,2)
+  cat(paste('Round 2 Cross Validation for using',subsets[i],'differentially expressed genes \n'))
+  cat(paste('Accuracy:',svm_classifier$acc,'\n'))
+  cat(paste('Sensitivity-Specificity AUC:', svm_classifier$ssAuc,'\n'))
+  cat(paste('Smallest Sensitivity over .80:',svm_classifier$sens80,'\n'))
+  cat(paste('Corresponding Specifcity:',svm_classifier$spec80,'\n'))
+  cat(paste('Precision-Recall AUC:', svm_classifier$prAuc,'\n'))
+  cat(paste('Maximum F-score:',svm_classifier$f,'\n'))
+  cat(paste('Maximum F-score Precision:',svm_classifier$precf,'\n'))
+  cat(paste('Maximum F-score Recall:',svm_classifier$recf,'\n'))
+  cat('\n')
+  cat('\n')
+}
+
+
+
+```
+It can be seen that as the number of differentially expressed genes that are used increases, the measures of performance of the SVM classifier varies. The maximum f-score is almost completely consistent throughout being around .57, however the recall decreases as the number of genes that are included increases, and the precision somewhat increases. The specificity at 80% sensitivity is seen to be a maximum at using 100 differntially expressed genes (around .46). the maximum f-score is seen when using 40 differentially expressed genes at a score of about .588 for both rounds of cross validation. All of the scores have been printed above.
+
+
+```{r Small Test Subset}
+roc_ss <- function(svm_predictions,test,r){
+  x <- length(test[1,])-1
+  prob.cancer <- attr (svm_predictions, "probabilities")[, 1]
+  roc.pred <- prediction (prob.cancer, test$test_Ph == 0)
+  perf <- performance (roc.pred, "sens", "spec")
+  plot(perf, colorize = TRUE,main = paste("Sensitivity-Specificity Curve for CV Round",r, 'Subset of',x,'Genes'),lwd = 4, xlab = 'Specificity',ylab = 'Sensitivity',ylim=range(0:1))
+  abline(a = 1, b = -1)
+
+  # AUC for Sensitivity-Specificity Curve
+  svm_classifier.ss_auc<-performance(roc.pred,"auc")@y.values[[1]]
+  # Sensitivity value closest to and greater than .8
+  svm_classifier.sens_80 <- perf@x.values[[1]][max(which(perf@x.values[[1]]>.8))]
+  # Corresponding specificity
+  svm_classifier.spec_80 <- perf@y.values[[1]][max(which(perf@x.values[[1]]>.8))]
+  return (list(spec80 = svm_classifier.spec_80,sens80 = svm_classifier.sens_80,ssAuc = svm_classifier.ss_auc))
+}
+
+roc_pr <- function(svm_predictions,test,r){
+  x <- length(test[1,])-1
+  prob.cancer <- attr (svm_predictions, "probabilities")[, 1]
+  roc.pred <- prediction (prob.cancer, test$test_Ph == 0)
+  
+  perf <- performance (roc.pred, "prec", "rec")
+  plot(perf, colorize = TRUE,main = paste("Precision-Recall Curve for CV Round",r,'Subset of',x,'Genes'),lwd = 4, xlab = 'Recall',ylab = 'Precision',ylim=range(0:1))
+  abline(h = 0.5, lty = 2)
+  svm_classifier.pr_auc <- performance(roc.pred,"auc")@y.values[[1]]
+  f_scores<-performance(roc.pred,"f")@y.values[[1]] # maximum F-score
+  svm_classifier.f <- f_scores[which.max(f_scores)]
+  svm_classifier.prec_f <- perf@y.values[[1]][which.max(f_scores)] # precision for max F-score
+  svm_classifier.rec_f <- perf@x.values[[1]][which.max(f_scores)] # recall for max F-score
+  return (list(f = svm_classifier.f, precf = svm_classifier.prec_f,recf = svm_classifier.rec_f, prAuc = svm_classifier.pr_auc))
+  
+}
+
+
+# Random Classifier example
+# Because the data is very complicated, I decided to test this on a random set that was
+# impossible to classify, and on a data set that was very classifiable. I have shown the 
+# scatterplot below for both data sets, and for the first there exists no reasonable
+# hyperplane of separability for SVM, while in the second we could choose a very obvious
+# slanted line down the plot to separate the classes
+
+# Here's a data set that is impossible to classify using a linear kernel:
+x = matrix(rnorm(40),ncol = 2)
+y = c(rep(0,10),rep(1,10))
+x[y==1,]=x[y==1,]+2
+
+toph <- c(1, 2)
+testx_r = matrix(rnorm(40),ncol = 2)
+testy_r = c(rep(0,10),rep(1,10))
+testy_r <- sample(c(0,1),20,rep = TRUE)
+plot(testx_r,col=(3-testy_r),main = "Scatterplot for Random Data",xlab='x',ylab= 'y')
+x = t(x)
+y = t(y)
+
+svm_classifier<- SVM_analysis(2,toph,y,x,testy_r,testx_r,1)
+
+# Now for separable data:
+testx = matrix(rnorm(40),ncol =2)
+testy = c(rep(0,10),rep(1,10))
+testx[testy ==1,]= testx[testy ==1,]+3
+plot(testx,col=(3-testy),main = "Scatterplot for Separable Data",xlab='x',ylab= 'y')
+# Transpose to be in same form as gene data
+testx = t(testx)
+testy = t(testy)
+
+
+svm_classifier<- SVM_analysis(2,toph,y,x,testy,testx,2)
+```
+Trying this out, we can see that clearly in the random case the classifier performs very poorly with precision-recall (sometimes) being below the 50% line and the sensitivity-specificity being below the y = -x line. In the second data set for the classifiable data the classifier performs perfectly.
+
+## Comparison of k-TSP + SVM to k-TSP
+Now, comparing this version of the classifier with finding differentially expressed features using the k-TSP algorithm and then using SVM to just using k-TSP as a classifier, we can see if this method really does perform better for prediction of cancer (at least with this data).
+
+```{r k-TSP Classifier}
+# Fold 1 as Training Subset
+classifier <- SWAP.Train.KTSP(f1_Expr,factor(f1_Pheno))
+testPrediction <- SWAP.KTSP.Classify(f2_Expr, classifier)
+testPrediction <- as.numeric(testPrediction)
+testPrediction <- (testPrediction == 2)
+length(which(f2_Pheno == testPrediction))
+SWAP.GetKTSP.PredictionStats(testPrediction,f2_Pheno)
+
+# Plot Results
+results <- SWAP.GetKTSP.TrainTestResults(f1_Expr,factor(f1_Pheno),f2_Expr,factor(f2_Pheno))
+SWAP.PlotKTSP.TrainTestROC(results, main = 'Sensitivity-Specificity for k-TSP Round 1')
+
+
+
+# Fold 2 as Training Subset
+classifier <- SWAP.Train.KTSP(f2_Expr,factor(f2_Pheno))
+testPrediction <- SWAP.KTSP.Classify(f1_Expr, classifier)
+testPrediction <- as.numeric(testPrediction)
+testPrediction <- (testPrediction == 2)
+length(which(f1_Pheno == testPrediction))
+SWAP.GetKTSP.PredictionStats(testPrediction,f1_Pheno)
+
+
+# Plot Results
+results <- SWAP.GetKTSP.TrainTestResults(f2_Expr,factor(f2_Pheno),f1_Expr,factor(f1_Pheno))
+SWAP.PlotKTSP.TrainTestROC(results, main = 'Sensitivity-Specificity for k-TSP Round 2')
+
+# We can estimate from the graph that the maximum specificity for a sensitivity of 
+# .8 is around .45 which is much lower than for the k-TSP + SVM algorithm
+
+```
+It can be seen from both of the Sensitivity-Specificity graphs (visual estimation) for the k-TSP classifier that for both rounds the maximum specificity for a sensitivity of .8 is around .45, which is much lower than for the k-TSP and SVM algorithm. Also, note that the Sensitivity-Specificity graph has an x axis that is switched here, as is sometimes done to view it similarly to an ROC curve. The Precision-Recall curve will not be plotted for this classifier since it is only to show the difference between the k-TSP and k-TSP + SVM classifier, because the Sensitivity Specificity graph is enough along with the auc values and the number of predictions that were correct for the test data set. For this particular algorithm, there was an accuracy of .627 for round 1 and an accuracy of .73 for round 2, therefore we can actaully see that the second round performed better in terms of accuracy than any of the previous algorithms. However, the average accuracy is .679 which is the accuracy of the highest accuracy algorithm for the SVM + k-TSP. Taking into account parsimony, this algorithm didn't filter down the genes at all and required all 22,000 some genes whereas the previous algorithms required much less. Using 22,000 genes versus 100 genes makes for a very different algorithm, and we can see that in other data sets, the 22,000 gene algorithm may perform worse because it is more likely to be overfit for the data set.
+
